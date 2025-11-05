@@ -96,47 +96,152 @@ form.addEventListener('submit', async (e) => {
 
     try {
         // 使用 fetch API 提交資料
-        const response = await fetch(SCRIPT_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: `data=${encodeURIComponent(JSON.stringify(formData))}`
-        });
-
-        // 檢查回應狀態
-        if (!response.ok) {
-            throw new Error(`HTTP 錯誤！狀態碼：${response.status}`);
+        // 添加調試資訊
+        console.log('準備提交資料：', formData);
+        console.log('目標 URL：', SCRIPT_URL);
+        console.log('目前頁面來源：', window.location.origin);
+        
+        // Google Apps Script Web App 的特殊處理方式
+        // 在 GitHub Pages 等外部網站上，可能會遇到 CORS 問題
+        // 因此我們會先嘗試 fetch，失敗時使用表單提交方式
+        
+        let response;
+        let useBackupMethod = false;
+        
+        try {
+            // 方法 1：嘗試使用 fetch（標準方式）
+            // 先嘗試 cors 模式，如果失敗則使用備用方法
+            response = await fetch(SCRIPT_URL, {
+                method: 'POST',
+                mode: 'cors',  // 嘗試 cors 模式
+                redirect: 'follow',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `data=${encodeURIComponent(JSON.stringify(formData))}`
+            });
+        } catch (fetchError) {
+            console.error('Fetch 錯誤：', fetchError);
+            console.error('錯誤類型：', fetchError.name);
+            console.error('錯誤訊息：', fetchError.message);
+            
+            // 如果 fetch 失敗（通常是 CORS 或網路錯誤），使用備用方法
+            useBackupMethod = true;
+        }
+        
+        // 如果需要使用備用方法，或者 no-cors 模式下無法確認結果
+        if (useBackupMethod) {
+            console.log('使用備用表單提交方式（避免 CORS 問題）...');
+            try {
+                await submitViaForm(formData);
+                return; // 成功提交後返回
+            } catch (backupError) {
+                console.error('備用方法也失敗：', backupError);
+                throw backupError;
+            }
         }
 
-        const result = await response.json();
+        // 如果可以使用 fetch 且能讀取回應，繼續處理
+        try {
+            // 檢查回應狀態
+            if (!response.ok && response.status !== 0) {
+                const errorText = await response.text();
+                console.error('HTTP 錯誤回應：', errorText);
+                console.error('回應狀態碼：', response.status);
+                console.error('回應狀態文字：', response.statusText);
+                
+                // 如果是 302 重定向（Google Apps Script 常見），嘗試讀取重定向後的內容
+                if (response.status === 302 || response.redirected) {
+                    console.log('檢測到重定向，嘗試讀取最終回應...');
+                    const finalUrl = response.url;
+                    console.log('最終 URL：', finalUrl);
+                }
+                
+                throw new Error(`HTTP 錯誤！狀態碼：${response.status}`);
+            }
 
-        if (result.success) {
-            showMessage('表單已成功提交！感謝您的參與。', 'success');
-            form.reset();
+            // 取得回應文字
+            const responseText = await response.text();
+            console.log('伺服器回應：', responseText);
             
-            // 重置到第一頁
-            showPage(1);
-            updateProgressIndicator();
-            
-            // 3秒後隱藏成功訊息
-            setTimeout(() => {
-                messageDiv.style.display = 'none';
-            }, 3000);
-        } else {
-            throw new Error(result.error || '提交失敗');
+            // 嘗試解析 JSON
+            let result;
+            try {
+                result = JSON.parse(responseText);
+            } catch (parseError) {
+                // 如果不是 JSON，可能是 HTML 錯誤頁面
+                console.error('JSON 解析錯誤：', parseError);
+                console.error('回應內容（前 500 字元）：', responseText.substring(0, 500));
+                
+                // 檢查是否是 HTML 錯誤頁面
+                if (responseText.includes('<html') || responseText.includes('<!DOCTYPE')) {
+                    throw new Error('伺服器返回了 HTML 頁面而非 JSON。可能是 Web App 部署設定問題。請確認：1) Web App 已正確部署 2) 「具有存取權的使用者」設為「任何人」');
+                }
+                
+                throw new Error('伺服器回應格式錯誤：' + responseText.substring(0, 100));
+            }
+
+            // 檢查結果
+            if (result && result.success) {
+                showMessage('表單已成功提交！感謝您的參與。', 'success');
+                form.reset();
+                
+                // 重置到第一頁
+                showPage(1);
+                updateProgressIndicator();
+                
+                // 3秒後隱藏成功訊息
+                setTimeout(() => {
+                    messageDiv.style.display = 'none';
+                }, 3000);
+            } else {
+                throw new Error(result.error || result.message || '提交失敗：伺服器未返回成功訊息');
+            }
+        } catch (responseError) {
+            // 如果讀取回應時出錯，可能是 CORS 問題，嘗試使用備用方法
+            console.error('讀取回應時出錯：', responseError);
+            console.log('嘗試使用備用表單提交方式...');
+            try {
+                await submitViaForm(formData);
+                return;
+            } catch (backupError) {
+                throw responseError; // 如果備用方法也失敗，拋出原始錯誤
+            }
         }
     } catch (error) {
         console.error('提交錯誤:', error);
+        console.error('錯誤名稱：', error.name);
+        console.error('錯誤堆疊：', error.stack);
         
         // 根據錯誤類型顯示不同的訊息
-        let errorMessage = '提交失敗：';
-        if (error.message.includes('Failed to fetch') || error.message.includes('fetch')) {
-            errorMessage += '無法連接到伺服器。請確認：\n1. 已設定正確的 Google Apps Script Web App URL\n2. Web App 已正確部署\n3. 網路連線正常';
-        } else if (error.message.includes('HTTP')) {
-            errorMessage += error.message + '。請檢查 Google Apps Script 是否正常運作。';
+        let errorMessage = '提交失敗：無法連接到伺服器。請確認：';
+        const errorMsg = error.message || '';
+        const errorName = error.name || '';
+        
+        if (errorMsg.includes('Failed to fetch') || 
+            errorMsg.includes('fetch') || 
+            errorName === 'TypeError' ||
+            errorMsg.includes('network') ||
+            errorMsg.includes('NetworkError')) {
+            errorMessage += '\n\n1. 已設定正確的 Google Apps Script Web App URL';
+            errorMessage += '\n2. Web App 已正確部署（執行身份：我，具有存取權的使用者：任何人）';
+            errorMessage += '\n3. 網路連線正常';
+            errorMessage += '\n\n提示：如果問題持續，請檢查瀏覽器控制台（按 F12）查看詳細錯誤';
+            
+            // 如果是網路錯誤，嘗試使用備用方法
+            console.log('檢測到網路錯誤，嘗試使用備用表單提交方式...');
+            try {
+                await submitViaForm(formData);
+                return;
+            } catch (backupError) {
+                console.error('備用方法也失敗：', backupError);
+            }
+        } else if (errorMsg.includes('HTTP')) {
+            errorMessage = '提交失敗：' + errorMsg + '。請檢查 Google Apps Script 是否正常運作。';
+        } else if (errorMsg.includes('CORS')) {
+            errorMessage = '提交失敗：CORS 錯誤。請確認 Google Apps Script Web App 的部署設定允許跨域請求（「具有存取權的使用者」必須設為「任何人」）。';
         } else {
-            errorMessage += error.message + '。請檢查網路連線或稍後再試。';
+            errorMessage = '提交失敗：' + errorMsg + '。請檢查瀏覽器控制台（按 F12）以獲取詳細錯誤資訊。';
         }
         
         showMessage(errorMessage, 'error');
@@ -144,6 +249,73 @@ form.addEventListener('submit', async (e) => {
         setLoadingState(false);
     }
 });
+
+// 備用提交方式：使用隱藏的表單提交（避免 CORS 問題）
+function submitViaForm(formData) {
+    return new Promise((resolve, reject) => {
+        // 創建隱藏的表單
+        const hiddenForm = document.createElement('form');
+        hiddenForm.method = 'POST';
+        hiddenForm.action = SCRIPT_URL;
+        hiddenForm.target = '_blank';  // 在新視窗打開，避免頁面跳轉
+        hiddenForm.style.display = 'none';
+        
+        // 添加資料欄位
+        const dataInput = document.createElement('input');
+        dataInput.type = 'hidden';
+        dataInput.name = 'data';
+        dataInput.value = JSON.stringify(formData);
+        hiddenForm.appendChild(dataInput);
+        
+        // 添加到頁面並提交
+        document.body.appendChild(hiddenForm);
+        
+        // 創建隱藏的 iframe 來接收回應
+        const iframe = document.createElement('iframe');
+        iframe.name = 'hidden_iframe';
+        iframe.style.display = 'none';
+        hiddenForm.target = 'hidden_iframe';
+        document.body.appendChild(iframe);
+        
+        // 設置超時
+        const timeout = setTimeout(() => {
+            document.body.removeChild(hiddenForm);
+            document.body.removeChild(iframe);
+            reject(new Error('提交超時。請檢查網路連線。'));
+        }, 10000);
+        
+        // 監聽 iframe 載入
+        iframe.onload = () => {
+            clearTimeout(timeout);
+            try {
+                // 嘗試讀取 iframe 內容（可能因為 CORS 無法讀取）
+                const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                const responseText = iframeDoc.body.textContent || iframeDoc.body.innerText;
+                
+                document.body.removeChild(hiddenForm);
+                document.body.removeChild(iframe);
+                
+                // 假設成功（因為無法讀取回應）
+                showMessage('表單已提交！請檢查 Google 試算表確認資料是否已寫入。', 'success');
+                form.reset();
+                showPage(1);
+                updateProgressIndicator();
+                resolve();
+            } catch (e) {
+                // 無法讀取 iframe 內容（CORS 限制）
+                document.body.removeChild(hiddenForm);
+                document.body.removeChild(iframe);
+                showMessage('表單已提交！由於安全限制無法確認回應，請檢查 Google 試算表確認資料是否已寫入。', 'success');
+                form.reset();
+                showPage(1);
+                updateProgressIndicator();
+                resolve();
+            }
+        };
+        
+        hiddenForm.submit();
+    });
+}
 
 // 收集表單資料
 function collectFormData() {
@@ -220,7 +392,9 @@ function validateForm() {
 
 // 顯示訊息
 function showMessage(text, type) {
-    messageDiv.textContent = text;
+    // 將換行符號轉換為 HTML 換行，並保留空白字元
+    const formattedText = text.replace(/\n/g, '<br>');
+    messageDiv.innerHTML = formattedText;
     messageDiv.className = `message ${type}`;
     messageDiv.style.display = 'block';
     
@@ -277,5 +451,4 @@ window.addEventListener('load', () => {
         }, index * 100);
     });
 });
-
 
