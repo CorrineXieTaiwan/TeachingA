@@ -3,7 +3,7 @@ const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbw2tdF2gu4f-uTm2fp38
 
 // 檢查 URL 是否已設定
 function checkScriptUrl() {
-    if (!SCRIPT_URL || SCRIPT_URL === 'https://script.google.com/macros/s/AKfycbw2tdF2gu4f-uTm2fp38Hfw2Fn7MQstr9KleZtBktSmawBHW3uFtm7CYolCaVzIvKpMxw/exec') {
+    if (!SCRIPT_URL || SCRIPT_URL === 'YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL_HER') {
         return false;
     }
     return true;
